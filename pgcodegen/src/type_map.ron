@@ -1,0 +1,1 @@
+{"serial":"u32","bigserial":"u64","date":"chrono::NaiveDate","smallserial":"u16","character varying":"String","bigint":"i64","ARRAY":"Vec<String>","text":"String","real":"f32","uuid":"uuid::Uuid","integer":"i32","smallint":"i16","boolean":"bool"}
