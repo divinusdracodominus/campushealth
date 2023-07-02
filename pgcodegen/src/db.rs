@@ -1,4 +1,4 @@
-use postgres::types::{ToSql, FromSql};
+use postgres::types::{ToSql};
 use postgres::SimpleQueryMessage;
 pub trait SimpleClient {
     type Err: std::error::Error;
@@ -17,7 +17,7 @@ pub trait SimpleClient {
     //fn simple_exec<S: ToString>(&self, query: S) -> Result<u64, Self::Err>;
 }
 
-impl SimpleClient for &mut postgres::Client {
+impl SimpleClient for postgres::Client {
     type Err = postgres::Error;
     type Row = postgres::Row;
     fn exec<S: ToString>(&mut self, query: S,
@@ -56,11 +56,7 @@ pub fn get_column<'a>(
 ) -> Result<Option<String>, crate::Error> {
     match message {
         Ok(val) => match val
-            .iter()
-            .enumerate()
-            .filter(|(i, val)| *i == idx)
-            .map(|(i, val)| val)
-            .next()
+            .get(idx)
         {
             Some(val) => match val.as_ref() {
                 Some(val) => Ok(Some(val.to_string())),

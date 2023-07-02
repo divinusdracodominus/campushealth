@@ -12,7 +12,9 @@ fn main() {
     builder
         .db_pull("postgresql://cardinal:Qksg0FV2EMDM@192.168.122.1:5432/myhealth")
         .unwrap();
-    let generated = builder.generate().unwrap();
+    builder.generate().unwrap();
+    let mut rocket = builder.into_rocket_builder();
+    let rocket_fns = rocket.generate().unwrap().build();
     //builder.db_push("postgresql://cardinal:Qksg0FV2EMDM@192.168.122.1:5432/temptest").unwrap();
-    println!("{}", generated);
+    println!("{}", rocket_fns);
 }
