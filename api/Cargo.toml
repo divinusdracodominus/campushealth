@@ -19,7 +19,16 @@ err-derive = "*"
 sha256 = "*"
 pgcodegen = { path = "../pgcodegen" }
 postgres-types = { git = "https://github.com/sfackler/rust-postgres/", features = ["with-uuid-1"]}
-postgres = "*"
+tokio-postgres = "*"
+async-trait = "*"
+tokio = { version = "1.29.1", features = ["full"]}
+rocket = {git = "https://github.com/SergioBenitez/Rocket/", features = ["json", "uuid"]}
+lazy_static = "*"
+
+[dev-dependencies]
+lazy_static = "*"
 
 [build-dependencies]
 pgcodegen = {path = "../pgcodegen"}
+tokio-postgres = "*"
+tokio = { version = "1.29.1", features = ["full"]}
