@@ -10,7 +10,8 @@ fn main() {
 
     #[cfg(feature = "postgres")]
     builder
-        .db_pull("postgresql://cardinal:Qksg0FV2EMDM@192.168.122.1:5432/myhealth")
+        .db_builder()
+        .pg_db_pull("postgresql://cardinal:Qksg0FV2EMDM@192.168.122.1:5432/myhealth")
         .unwrap();
     builder.generate().unwrap();
     let mut rocket = builder.into_rocket_builder();

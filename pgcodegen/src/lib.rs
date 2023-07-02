@@ -34,12 +34,15 @@
     ```
 **/
 
-#[cfg(feature = "postgres")]
+#[cfg(feature = "db")]
 pub mod db;
+use db::DBBuilder;
 
 #[cfg(feature = "rocket")]
 pub mod rocket;
-pub mod server;
+
+#[cfg(feature = "postgres")]
+pub mod postgresimpl;
 
 #[macro_use]
 extern crate serde_derive;
@@ -222,38 +225,42 @@ impl Table {
         Ok(self)
     }
 
+    #[cfg(feature = "db")]
     fn generate_delete_query(&self, pkey: &str) -> String {
         format!("\"delete from {} where {} = $1\"", &self.name, pkey)
     }
 
+    #[cfg(feature = "db")]
     fn generate_insert_query(&self) -> String {
         let fields = self.columns.iter().map(|c| c.name.as_str()).collect::<Vec<&str>>();
         let args = (1..fields.len()+1).map(|f| format!("${}", f)).collect::<Vec<String>>();
         format!("\"insert into {} ({}) values ({})\"", self.name, fields.join(", "), args.join(", "))
     }
 
+    #[cfg(feature = "db")]
     fn full_self_fields(&self) -> String {
         self.columns.iter().map(|v| format!("&self.{}", v.name)).collect::<Vec<String>>().join(", ")
     }
 
+    #[cfg(feature = "db")]
     fn full_self_fields_with_pkey(&self, pkey: &str) -> String {
         let mut fields = self.columns.iter().map(|v| format!("&self.{}", v.name)).collect::<Vec<String>>();
         fields.push(format!("&self.{}", pkey));
         fields.join(", ")
     }
 
+    #[cfg(feature = "db")]
     fn generate_update_query(&self, pkey: &str) -> String {
         let sets = self.columns.iter().enumerate().map(|(idx, v)| format!("{} = ${}", v.name, idx+1)).collect::<Vec<String>>();
         let last_arg = sets.len()+1;
         format!("\"update {} set {} where {} = ${}\"", self.name, sets.join(", "), pkey, last_arg)
     }
 
+    #[cfg(feature = "db")]
     fn generate_dbrow_impl(&self) -> Result<Impl, Error> {
         if let Some(pkey) = &self.primary_key {
             let mut row_impl = Impl::new(&self.name);
             
-            
-
             let mut fn_map = Builder::generate_db_row_fns("client");
             {
                 let delete_fn = fn_map.get_mut("delete").unwrap();
@@ -402,43 +409,8 @@ impl Builder {
         self
     }
 
-    /// load data from currently a sync postgres client, support for future database engines will be added later
-    #[cfg(feature = "postgres")]
-    pub fn db_pull(&mut self, url: &str) -> Result<&mut Self, Error> {
-        let mut client = Client::connect(url, NoTls)?;
-
-        let tables = client.simple_query(
-            "select table_name from information_schema.tables where table_schema = 'public'",
-        )?;
-        let statement = client.prepare("select column_name,data_type,is_nullable from information_schema.columns where table_name = $1")?;
-        let pkey_statement = client.prepare(include_str!("sql/get_primary_key.sql"))?;
-        for table in tables.into_iter() {
-            let table = match db::get_column(db::from_query_message(table), 0)? {
-                Some(v) => v,
-                None => continue,
-            };
-            let rows = client.query(&statement, &[&table])?;
-            let mut columns = Vec::with_capacity(rows.len());
-            for row in rows.into_iter() {
-                let name = row.try_get(0)?;
-                let data_type = row.try_get(1)?;
-                let null = match row.try_get(2)? {
-                    "YES" => true,
-                    "NO" => false,
-                    _ => false,
-                };
-                columns.push(Column::new(name, data_type, null, false));
-            }
-            let pkey = client.query(&pkey_statement, &[&table])?;
-            let mut table = Table::new(table, columns);
-            if let Some(pkey_column_ref) = pkey.into_iter().next() {
-                let pkey_column = pkey_column_ref.try_get(0)?;
-                table.primary_key(pkey_column)?;
-            }
-
-            self.tables.push(table);
-        }
-        Ok(self)
+    pub fn db_builder(&mut self) -> DBBuilder {
+        DBBuilder::create_from_parts(&mut self.tables, &mut self.scope, &self.type_map)
     }
 
     ///
@@ -537,7 +509,7 @@ impl Builder {
                 wherestruct.push_field(wherefield);
             }
             self.scope.push_struct(newstruct);
-            self.scope.push_impl(table.generate_dbrow_impl().unwrap());
+            
             wherestruct.new_field("where_kind", Type::new("WhereType"));
             where_module.push_struct(wherestruct);
 
@@ -592,30 +564,6 @@ impl Builder {
         outmap.insert("select", select_one);
         outmap
     }
-
-    /*fn generate_dbrow_trait(&mut self) -> &mut Self {
-        let mut dbrow_trait = Trait::new(DBROWTRAIT);
-        dbrow_trait
-            .vis("pub")
-            .generic("T")
-            .generic("W")
-            .bound("Self", "Sized")
-            .associated_type("Err")
-            .bound(Type::new("std::error::Error"));
-        dbrow_trait.doc("the primary trait that is used for ORM CRUD operations, ## NOTE: Future plans include a default impl for insert_one, update_one, delete_one, select_one that use self.into::<WhereSelf>()");
-        for (_key, func) in Self::generate_db_row_fns("client").into_iter() {
-            dbrow_trait.push_fn(func);
-        }
-
-        let mut version_fn = Function::new("version_hash");
-        version_fn.ret(Type::new("&'static str"))
-            .line(&format!("\"{}\"", self.version_base64()))
-            .vis("pub")
-            .doc("base64 encoded hash of table names, column names, and column types using alphanumerics, ~, _");
-        self.scope.push_fn(version_fn);
-        self.scope.push_trait(dbrow_trait);
-        self
-    }*/
 
     pub fn into_rocket_builder(self) -> RocketBuilder {
         RocketBuilder::new(self.tables, self.type_map, self.scope)
