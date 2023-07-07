@@ -49,12 +49,10 @@ extern crate serde_derive;
 #[macro_use]
 extern crate err_derive;
 
-use codegen::{Field, Enum, Function, Impl, Module, Scope, Struct, Trait, Type};
-#[cfg(feature = "postgres")]
-use postgres::{Client, NoTls};
+use codegen::{Field, Function, Impl, Scope, Struct, Type};
 use std::io::{Read, Write};
 
-use std::collections::{HashMap, BTreeMap};
+use std::collections::HashMap;
 
 use crate::rocket::RocketBuilder;
 
@@ -63,9 +61,9 @@ use std::hash::{Hash, Hasher};
 
 pub type Uuid = String;
 
-    pub fn new_v4() -> Uuid {
-        uuid::Uuid::new_v4().to_string()
-    }
+pub fn new_v4() -> Uuid {
+    uuid::Uuid::new_v4().to_string()
+}
 
 pub fn basic_typemap() -> HashMap<String, String> {
     let mut type_map = HashMap::new();
@@ -106,7 +104,7 @@ pub enum Error {
     #[cfg(feature = "postgres")]
     #[source]
     #[error(display = "{}", _0)]
-    Postgres(postgres::Error),
+    Postgres(tokio_postgres::Error),
     #[source]
     #[error(display = "{}", _0)]
     IO(std::io::Error),
@@ -123,8 +121,8 @@ pub enum Error {
     MissingPKey(String),
 }
 
-impl From<postgres::Error> for Error {
-    fn from(pgerr: postgres::Error) -> Error {
+impl From<tokio_postgres::Error> for Error {
+    fn from(pgerr: tokio_postgres::Error) -> Error {
         Error::Postgres(pgerr)
     }
 }
@@ -149,6 +147,12 @@ impl Column {
 
     pub fn create_type(&self, type_map: &HashMap<String, String>) -> Result<Type, Error> {
         Ok(Type::new(self.create_type_internal(type_map)?))
+    }
+
+    pub fn create_many_pkeys(&self, type_map: &HashMap<String, String>) -> Result<Type, Error> {
+        let mut output = Type::new("Vec");
+        output.generic(self.create_type_internal(type_map)?);
+        Ok(output)
     }
 
     fn create_type_internal(&self, type_map: &HashMap<String, String>) -> Result<String, Error> {
@@ -180,7 +184,6 @@ impl Column {
             format!("\"{}\" {}", self.name, self.data_type)
         }
     }
-
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Hash)]
@@ -197,8 +200,8 @@ impl Table {
 
     pub fn pkey_column(&self) -> Option<&Column> {
         if let Some(pkey) = &self.primary_key {
-            self.columns.iter().filter(|c| &c.name == pkey).next()
-        }else{
+            self.columns.iter().find(|c| &c.name == pkey)
+        } else {
             None
         }
     }
@@ -208,6 +211,24 @@ impl Table {
             columns,
             primary_key: None,
         }
+    }
+
+    // currently doesn't work make_bytes needs to be added to a trait, then implemented
+    #[cfg(feature = "db")]
+    fn where_list_fn(&self) -> Function {
+        let mut outfun = Function::new("build_clause");
+        outfun.arg_ref_self()
+            .ret("(Vec<&'static str>, Vec<Vec<u8>>)")
+            .line("let mut values: Vec<Vec<u8>> = Vec::new();")
+            .line("let mut fields: Vec<&'static str> = Vec::new();");
+        for column in self.columns.iter() {
+            outfun.line(format!("if let Some(value) = self.{} {{", column.name))
+                .line("values.push(value.make_bytes().to_vec());")
+                .line(format!("fields.push(\"{}\");", column.name))
+                .line("}");
+        }
+        outfun.line("(fields, values)");
+        outfun
     }
 
     /// # Returns
@@ -232,51 +253,95 @@ impl Table {
 
     #[cfg(feature = "db")]
     fn generate_insert_query(&self) -> String {
-        let fields = self.columns.iter().map(|c| c.name.as_str()).collect::<Vec<&str>>();
-        let args = (1..fields.len()+1).map(|f| format!("${}", f)).collect::<Vec<String>>();
-        format!("\"insert into {} ({}) values ({})\"", self.name, fields.join(", "), args.join(", "))
+        let fields = self
+            .columns
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect::<Vec<&str>>();
+        let args = (1..fields.len() + 1)
+            .map(|f| format!("${}", f))
+            .collect::<Vec<String>>();
+        format!(
+            "\"insert into {} ({}) values ({})\"",
+            self.name,
+            fields.join(", "),
+            args.join(", ")
+        )
     }
 
     #[cfg(feature = "db")]
     fn full_self_fields(&self) -> String {
-        self.columns.iter().map(|v| format!("&self.{}", v.name)).collect::<Vec<String>>().join(", ")
+        self.columns
+            .iter()
+            .map(|v| format!("&self.{}", v.name))
+            .collect::<Vec<String>>()
+            .join(", ")
     }
 
     #[cfg(feature = "db")]
     fn full_self_fields_with_pkey(&self, pkey: &str) -> String {
-        let mut fields = self.columns.iter().map(|v| format!("&self.{}", v.name)).collect::<Vec<String>>();
+        let mut fields = self
+            .columns
+            .iter()
+            .map(|v| format!("&self.{}", v.name))
+            .collect::<Vec<String>>();
         fields.push(format!("&self.{}", pkey));
         fields.join(", ")
     }
 
     #[cfg(feature = "db")]
     fn generate_update_query(&self, pkey: &str) -> String {
-        let sets = self.columns.iter().enumerate().map(|(idx, v)| format!("{} = ${}", v.name, idx+1)).collect::<Vec<String>>();
-        let last_arg = sets.len()+1;
-        format!("\"update {} set {} where {} = ${}\"", self.name, sets.join(", "), pkey, last_arg)
+        let sets = self
+            .columns
+            .iter()
+            .enumerate()
+            .map(|(idx, v)| format!("{} = ${}", v.name, idx + 1))
+            .collect::<Vec<String>>();
+        let last_arg = sets.len() + 1;
+        format!(
+            "\"update {} set {} where {} = ${}\"",
+            self.name,
+            sets.join(", "),
+            pkey,
+            last_arg
+        )
     }
 
-    #[cfg(feature = "db")]
+    #[cfg(feature = "postgres")]
     fn generate_dbrow_impl(&self) -> Result<Impl, Error> {
         if let Some(pkey) = &self.primary_key {
             let mut row_impl = Impl::new(&self.name);
-            
-            let mut fn_map = Builder::generate_db_row_fns("client");
+            row_impl.r#macro("#[async_trait::async_trait]");
+
+            let mut fn_map =
+                DBBuilder::generate_db_row_fns(Type::new("&mut tokio_postgres::Client"), "tokio_postgres::types::ToSql");
             {
                 let delete_fn = fn_map.get_mut("delete").unwrap();
-                delete_fn.line(&format!("client.exec({}, &[&self.{}])", self.generate_delete_query(&pkey), pkey));
+                delete_fn.line(&format!(
+                    "client.execute({}, &[&self.{}]).await",
+                    self.generate_delete_query(pkey),
+                    pkey
+                ));
             }
             {
                 let insert_fn = fn_map.get_mut("insert").unwrap();
-                insert_fn.line(&format!("client.exec({}, &[{}])", self.generate_insert_query(), self.full_self_fields()));
+                insert_fn.line(&format!(
+                    "client.execute({}, &[{}]).await",
+                    self.generate_insert_query(),
+                    self.full_self_fields()
+                ));
             }
             {
                 let update_fn = fn_map.get_mut("update").unwrap();
-                update_fn.line(&format!("client.exec({}, &[{}])", self.generate_update_query(pkey), self.full_self_fields_with_pkey(pkey)));
+                update_fn.line(&format!(
+                    "client.execute({}, &[{}]).await",
+                    self.generate_update_query(pkey),
+                    self.full_self_fields_with_pkey(pkey)
+                ));
             }
             {
                 let select_fn = fn_map.get_mut("select").unwrap();
-                select_fn.line(&format!("let selected = client.fetch(\"select {} from {} where {} = $1\", &[pkey])?;", self.columns.iter().map(|c| c.name.as_str()).collect::<Vec<&str>>().join(", "), self.name, pkey))
+                select_fn.line(&format!("let selected = client.query(\"select {} from {} where {} = $1\", &[pkey]).await?;", self.columns.iter().map(|c| c.name.as_str()).collect::<Vec<&str>>().join(", "), self.name, pkey))
                     .line("let fields = match selected.get(0) {")
                     .line("Some(fields) => fields,")
                     .line("None => return Ok(None)")
@@ -287,14 +352,18 @@ impl Table {
                 }
                 select_fn.line("}))");
             }
+            /*{
+                let select_all = fn_map.get_mut("select_all").unwrap();
+                select_all.line(format!("client.simple_query(\"select * from {}\").await?;", self.name))
+                    .line("unimplemented!()");
+            }*/
 
             let mut dbrow_type = Type::from("DBRow");
-            dbrow_type.generic("T").generic(format!("where_types::{}", self.where_name()));
-            row_impl.impl_trait(dbrow_type)
-                .associate_type("Err", Type::new("<T as pgcodegen::db::SimpleClient>::Err"))
-                .bound("T", "pgcodegen::db::SimpleClient<Row = postgres::Row, Err = postgres::Error>")
-                .generic("T");
-            
+            dbrow_type.generic("tokio_postgres::Client"); //.generic(format!("where_types::{}", self.where_name()));
+            row_impl
+                .impl_trait(dbrow_type)
+                .associate_type("Err", Type::new("tokio_postgres::Error"));
+
             for (_k, func) in fn_map.into_iter() {
                 if func.body.is_some() {
                     row_impl.push_fn(func);
@@ -302,14 +371,13 @@ impl Table {
             }
             Ok(row_impl)
         } else {
-            return Err(Error::MissingPKey(self.name.clone()))
+            Err(Error::MissingPKey(self.name.clone()))
         }
-    
     }
 
     fn generate_row_impl(&self, type_map: &HashMap<String, String>) -> Result<Impl, Error> {
         let mut where_impl = Impl::new(Type::new(&self.where_name()));
-        
+
         /*let mut gen_clause_fn = Function::new("gen_clause");
         gen_clause_fn.arg_ref_self()
             .ret("Option<String>")
@@ -318,8 +386,8 @@ impl Table {
 
         for column in self.columns.iter() {
             /*gen_clause_fn.line(format!("if let Some(val) = self.{} {"))
-                .line(format!("fields.push(\"{}\");", column.name))
-                .line("}");*/
+            .line(format!("fields.push(\"{}\");", column.name))
+            .line("}");*/
             let mut func = Function::new(&column.name);
 
             func.arg_mut_self()
@@ -334,14 +402,16 @@ impl Table {
             where_impl.push_fn(func);
         }
         let mut where_kind_fn = Function::new("operator");
-        where_kind_fn.arg("operator", Type::new("WhereType"))
+        where_kind_fn
+            .arg("operator", Type::new("WhereType"))
             .arg_mut_self()
             .ret(Type::new("&mut Self"))
-            .line(format!("self.where_kind = operator;"))
+            .line("self.where_kind = operator;".to_string())
             .line("self")
             .vis("pub");
 
         where_impl.push_fn(where_kind_fn);
+        //where_impl.push_fn(self.where_list_fn());
         Ok(where_impl)
     }
 
@@ -364,6 +434,55 @@ impl Table {
         from_impl.impl_trait(from_trait);
         from_impl.push_fn(from_fn);
         from_impl
+    }
+
+    pub fn generate_struct(
+        &self,
+        type_map: &HashMap<String, String>,
+        derives: &[String],
+    ) -> Result<Struct, Error> {
+        let mut newstruct = Struct::new(&self.name);
+        newstruct.vis("pub");
+        for derive in derives.iter() {
+            newstruct.derive(derive);
+        }
+
+        for column in self.columns.iter() {
+            let mut field = Field::new(&column.name, column.create_type(type_map)?);
+            field.vis("pub");
+            newstruct.push_field(field);
+        }
+        Ok(newstruct)
+    }
+
+    #[cfg(feature = "db")]
+    pub fn generate_where_struct(
+        &self,
+        type_map: &HashMap<String, String>,
+        derives: &[String],
+    ) -> Result<Struct, Error> {
+        let mut wherestruct = Struct::new(&self.where_name());
+        wherestruct.vis("pub");
+        wherestruct.doc(&format!("used as where clause for type: {} \n Each field that appears in the generated type is wrapped in an Option that determines wether or not it should appear in the where clause, nested options are treated as nullable arguments in the where clause.", self.name));
+
+        for derive in derives.iter() {
+            wherestruct.derive(derive);
+        }
+
+        for column in self.columns.iter() {
+            let mut wherefield = Field::new(&column.name, column.create_where_type(type_map)?);
+            wherefield.vis("pub");
+            wherestruct.push_field(wherefield);
+        }
+        wherestruct.new_field("where_kind", Type::new("WhereType"));
+        
+        Ok(wherestruct)
+    }
+}
+
+impl std::default::Default for Builder {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -410,29 +529,12 @@ impl Builder {
     }
 
     pub fn db_builder(&mut self) -> DBBuilder {
-        DBBuilder::create_from_parts(&mut self.tables, &mut self.scope, &self.type_map)
-    }
-
-    ///
-    /// currently doesn't fully function because it can't handle the ARRAY type
-    ///
-    #[cfg(feature = "postgres")]
-    pub fn db_push(&mut self, url: &str) -> Result<(), postgres::error::Error> {
-        let mut client = Client::connect(url, NoTls)?;
-
-        for table in self.tables.iter() {
-            let fields: String = table
-                .columns
-                .iter()
-                .map(|c| c.get_create_str())
-                .collect::<Vec<String>>()
-                .join(", ")
-                .to_string();
-            let query = format!("create table {} ({})", table.name, fields);
-            client.execute(&query, &vec![])?;
-        }
-
-        Ok(())
+        DBBuilder::create_from_parts(
+            &mut self.tables,
+            &mut self.scope,
+            &self.type_map,
+            &self.derives,
+        )
     }
 
     /// uses Hash trait to generate a hash of the tables, thereby producing a version number
@@ -455,114 +557,21 @@ impl Builder {
 
         let engine =
             base64::engine::GeneralPurpose::new(&custom, base64::engine::general_purpose::PAD);
-        engine.encode(&self.version_hash().to_le_bytes())
-    }
-
-    /// creates a WhereType enum, and the implementation of Default for it
-    fn create_where_enum(derives: &[String]) -> Enum {
-        let mut where_enum = Enum::new("WhereType");
-        where_enum.new_variant("Or");
-        where_enum.new_variant("And").annotation("#[default]");
-        where_enum.vis("pub");
-        for derive in derives {
-            where_enum.derive(derive);
-        }
-
-        let mut default_impl = Impl::new("WhereType");
-        default_impl.impl_trait(Type::new("std::default::Default"));
-        default_impl.new_fn("default")
-            .ret("Self")
-            .line("Self::None");
-
-        where_enum
+        engine.encode(self.version_hash().to_le_bytes())
     }
 
     /// the primary method this struct employs which converts
     /// the tables, derives, scope, and type map into corresponding rust code
     pub fn generate(&mut self) -> Result<&mut Self, Error> {
-        let mut where_module = Module::new("where_types");
-        //where_module.doc("Provides the where clause types for this ORM");
-        where_module.vis("pub");
-
         for table in self.tables.iter() {
-            let mut newstruct = Struct::new(&table.name);
-            let mut wherestruct = Struct::new(&table.where_name());
-
-            newstruct.vis("pub");
-            wherestruct.vis("pub");
-            wherestruct.doc(&format!("used as where clause for type: {} \n Each field that appears in the generated type is wrapped in an Option that determines wether or not it should appear in the where clause, nested options are treated as nullable arguments in the where clause.", table.name));
-
-            for derive in self.derives.iter() {
-                newstruct.derive(derive);
-                wherestruct.derive(derive);
-            }
-
-            for column in table.columns.iter() {
-                let mut field = Field::new(&column.name, column.create_type(&self.type_map)?);
-                field.vis("pub");
-                let mut wherefield =
-                    Field::new(&column.name, column.create_where_type(&self.type_map)?);
-                wherefield.vis("pub");
-
-                newstruct.push_field(field);
-
-                wherestruct.push_field(wherefield);
-            }
-            self.scope.push_struct(newstruct);
-            
-            wherestruct.new_field("where_kind", Type::new("WhereType"));
-            where_module.push_struct(wherestruct);
-
-            where_module.push_impl(table.generate_row_impl(&self.type_map)?);
-            where_module.push_impl(table.impl_from_struct());
+            self.scope
+                .push_struct(table.generate_struct(&self.type_map, &self.derives)?);
         }
-
-        let where_enum = Self::create_where_enum(&self.derives);
-        where_module.push_enum(where_enum);
-
-        self.scope.push_module(where_module);
-        //self.generate_dbrow_trait();
         Ok(self)
     }
 
     pub fn build(&self) -> String {
         self.scope.to_string()
-    }
-
-    fn generate_db_row_fns(client_name: &'static str) -> BTreeMap<&'static str, Function> {
-        let mut outmap = BTreeMap::new();
-        let mut result = Type::new("Result");
-        result
-            .generic(Type::new("u64"))
-            .generic(Type::new("Self::Err"));
-
-        let mut select_result = Type::new("Result");
-        let mut self_vec = Type::new("Option");
-        self_vec.generic("Self");
-        select_result.generic(self_vec).generic("Self::Err");
-
-        let one = vec!["insert", "update", "delete"];
-        for field in one.iter() {
-            let mut func = Function::new(field.to_string());
-            func.arg(client_name, Type::new("&mut T"))
-                .arg_ref_self()
-                .ret(&result);
-            func.body = None;
-            outmap.insert(*field, func);
-        }
-        
-        let mut select_one = Function::new("select");
-        select_one
-            .arg(client_name, Type::new("&mut T"))
-            .generic("P")
-            .arg("pkey", Type::new("&P"))
-            .ret(select_result)
-            .bound("P", Type::new("postgres::types::ToSql"))
-            .bound("P", Type::new("std::marker::Sync"))
-            .doc("creates Self based on the primary key value passed into the function");
-        select_one.body = None;
-        outmap.insert("select", select_one);
-        outmap
     }
 
     pub fn into_rocket_builder(self) -> RocketBuilder {

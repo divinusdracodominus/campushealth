@@ -1,6 +1,6 @@
 use crate::Error;
-use postgres::types::{ToSql};
-use postgres::SimpleQueryMessage;
+use tokio_postgres::types::ToSql;
+use tokio_postgres::SimpleQueryMessage;
 pub trait SimpleClient {
     type Err: std::error::Error;
     type Row;
@@ -18,9 +18,9 @@ pub trait SimpleClient {
     //fn simple_exec<S: ToString>(&self, query: S) -> Result<u64, Self::Err>;
 }
 
-impl SimpleClient for postgres::Client {
-    type Err = postgres::Error;
-    type Row = postgres::Row;
+/*impl SimpleClient for tokio_postgres::Client {
+    type Err = tokio_postgres::Error;
+    type Row = tokio_postgres::Row;
     fn exec<S: ToString>(&mut self, query: S,
     fields: &[&(dyn ToSql + Sync)]) -> Result<u64, Self::Err> {
         self.execute(&query.to_string(), fields)
@@ -33,11 +33,9 @@ impl SimpleClient for postgres::Client {
     ) -> Result<Vec<Self::Row>, Self::Err> {
         self.query(&query.to_string(), fields)
     }
-}
+}*/
 
-pub fn from_query_message<'a>(
-    message: SimpleQueryMessage,
-) -> Result<Vec<Option<String>>, crate::Error> {
+pub fn from_query_message(message: SimpleQueryMessage) -> Result<Vec<Option<String>>, Error> {
     Ok(match message {
         SimpleQueryMessage::Row(row) => {
             let mut outvec = Vec::with_capacity(row.len());
@@ -51,14 +49,12 @@ pub fn from_query_message<'a>(
     })
 }
 
-pub fn get_column<'a>(
+pub fn get_column(
     message: Result<Vec<Option<String>>, crate::Error>,
     idx: usize,
 ) -> Result<Option<String>, crate::Error> {
     match message {
-        Ok(val) => match val
-            .get(idx)
-        {
+        Ok(val) => match val.get(idx) {
             Some(val) => match val.as_ref() {
                 Some(val) => Ok(Some(val.to_string())),
                 None => Ok(None),
@@ -66,8 +62,8 @@ pub fn get_column<'a>(
             None => Ok(None),
         },
         Err(e) => match e {
-            crate::Error::CommandComplete(_) => return Ok(None),
-            _ => return Err(e),
+            crate::Error::CommandComplete(_) => Ok(None),
+            _ => Err(e),
         },
     }
 }

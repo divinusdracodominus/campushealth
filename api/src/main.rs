@@ -1,15 +1,14 @@
 #[macro_use]
 extern crate rocket;
 
-use std::net::IpAddr;
 use std::collections::HashMap;
+use std::net::IpAddr;
 
-use rocket::State;
+use rocket::serde::{Deserialize, Serialize};
 use rocket::tokio::sync::Mutex;
-use rocket::serde::json::{Json, Value, json};
-use rocket::serde::{Serialize, Deserialize};
+use rocket::State;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NewConnection {
     ip: IpAddr,
     headers: HashMap<String, Vec<String>>,
@@ -19,13 +18,18 @@ pub struct NewConnection {
 fn rocket() -> _ {
     use rocket::fairing::AdHoc;
 
-    let builder = rocket::build();
-        api::schema::mount_routes(builder).attach(AdHoc::on_request("Compatibility Normalizer", |req, _| Box::pin(async move {
-            if !req.uri().is_normalized_nontrailing() {
-                let normal = req.uri().clone().into_normalized_nontrailing();
-                warn!("Incoming request URI was normalized for compatibility.");
-                info!("{} -> {}", req.uri(), normal);
-                req.set_uri(normal);
-            }
-        })))
+    api::schema::mount_routes(rocket::build())
+    .attach(AdHoc::on_request(
+        "Compatibility Normalizer",
+        |req, _| {
+            Box::pin(async move {
+                if !req.uri().is_normalized_nontrailing() {
+                    let normal = req.uri().clone().into_normalized_nontrailing();
+                    warn!("Incoming request URI was normalized for compatibility.");
+                    info!("{} -> {}", req.uri(), normal);
+                    req.set_uri(normal);
+                }
+            })
+        },
+    ))
 }

@@ -79,7 +79,7 @@ impl events {
     }
 }
 
-impl calendarentry {
+/*impl calendarentry {
     pub fn gen_hash_uuid(&self) -> Uuid {
         let content = match &self.description {
             Some(description) => format!("{}{}", self.title, description),
@@ -104,4 +104,4 @@ impl From<calendarentry> for events {
             repitition: None,
         }
     }
-}
+}*/

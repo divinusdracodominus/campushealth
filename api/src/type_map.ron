@@ -1,1 +1,1 @@
-{"ARRAY":"Vec<String>","bigint":"i64","uuid":"uuid::Uuid","real":"f32","boolean":"bool","integer":"i32","character varying":"String","text":"String","date":"chrono::NaiveDate","smallserial":"u16","smallint":"i16","serial":"u32","bigserial":"u64"}
+{"date":"chrono::NaiveDate","smallserial":"u16","ARRAY":"Vec<String>","bigint":"i64","character varying":"String","serial":"u32","text":"String","real":"f32","boolean":"bool","uuid":"uuid::Uuid","integer":"i32","smallint":"i16","bigserial":"u64"}
